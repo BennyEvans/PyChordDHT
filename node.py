@@ -1,33 +1,32 @@
 from hash_util import *
-from message_types import *
+from network_ctrl import *
 from socket import *
 import time
-from threading import Thread
+from threading import *
 import signal
 import sys
 import uuid
 import pickle
+import copy
+
+##TODO
+# Don't use split(":") - serialized object may contain ":"
+# Port to using CtrlMessage() this will also fix the above
+# arg parsing
 
 ####################### Structs #######################
 class Node():
     ID = 0
-    IPAddr = None
+    IPAddr = "localhost"
     ctrlPort = 7228
     relayPort = 7229
 
 ####################### Globals #######################
 
-#Networking
-servCtrl = None
-servRelay = None
-MAX_REC_SIZE = 1024
-MAX_CONNECTIONS = 30
-DEFAULT_TIMEOUT = 10
-
 #Node
 thisNode = Node()
 thisNode.ID = hash_str(str(uuid.uuid4()) + str(uuid.uuid4()))
-thisNode.IPAddr = ""
+thisNode.IPAddr = "localhost"
 thisNode.ctrlPort = 7228
 thisNode.relayPort = 7229
 
@@ -35,6 +34,7 @@ prevNode = None
 
 #Finger table
 fingerTable = []
+fingerTableLock = Lock()
 
 ############### Signal Handlers and Exit ###############
 
@@ -46,6 +46,8 @@ def exit_signal_handler(signal, frame):
 signal.signal(signal.SIGINT, exit_signal_handler)
 
 def graceful_exit(exitCode):
+    global servCtrl
+    global servRelay
     try:
         servCtrl.shutdown(1)
         servCtrl.close()
@@ -58,20 +60,49 @@ def graceful_exit(exitCode):
         print "Could not close relay port."
     exit(exitCode)
 
-#################### Network Sockets ####################
-    
+
+################## NETWORK CALLBACKS ###################
+
 def handle_ctrl_connection(conn, addr):
     data = conn.recv(MAX_REC_SIZE)
     conn.settimeout(DEFAULT_TIMEOUT)
 
     if data: 
         if int(data[0]) == ControlMessageTypes.GET_NEXT_NODE:
+            retCode = "0"
             tmpNode = find_closest_finger(unserialize_key(data.split(':')[1]))
             if tmpNode == thisNode:
                 tmpNode = get_immediate_successor_node()
+                retCode = "1"
+            conn.send(retCode + ":" + serialize_node(tmpNode))
+            
+        elif int(data[0]) == ControlMessageTypes.GET_ROOT_NODE_REQUEST:
+            tmpNode = get_root_node(unserialize_key(data.split(':')[1]))
             conn.send(serialize_node(tmpNode))
-        elif int(data[0]) == ControlMessageTypes.GET_ROOT_NODE:
-            pass
+            
+        elif int(data[0]) == ControlMessageTypes.GET_PREDECESSOR:
+            conn.send(serialize_node(get_predecessor()))
+            
+        elif int(data[0]) == ControlMessageTypes.IS_PREDECESSOR:
+            set_predecessor(unserialize_node(data.split(':')[1]))
+            conn.send(ACK)
+            
+        elif int(data[0]) == ControlMessageTypes.IS_SUCCESSOR:
+            set_immediate_successor(unserialize_node(data.split(':')[1]))
+            conn.send(ACK)
+            
+        elif int(data[0]) == ControlMessageTypes.GET_NEXT_NODE_PREDECESSOR:
+            retCode = "0"
+            tmpNode = find_closest_finger(unserialize_key(data.split(':')[1]))
+            if tmpNode == thisNode:
+                retCode = "1"
+            conn.send(retCode + ":" + serialize_node(tmpNode))
+            
+        elif int(data[0]) == ControlMessageTypes.UPDATE_FINGER_TABLE:
+            i = data.split(':')[1]
+            tmpNode = unserialize_node(data.split(':')[2])
+            update_finger_table(tmpNode, int(i))
+            conn.send(ACK)
 
     print "Closing connection."
     conn.shutdown(1)
@@ -88,87 +119,121 @@ def handle_connection(conn, addr):
     conn.close()
     return
 
-def wait_for_ctrl_connections():
-    global servCtrl
-    global thisNode
-    servCtrl = socket(AF_INET, SOCK_STREAM)
-    conAddr = (thisNode.IPAddr, thisNode.ctrlPort)
-    servCtrl.bind((conAddr))
-    servCtrl.listen(MAX_CONNECTIONS) 
-    print "Waiting for Control Connections."
-    while 1:
-        conn, addr = servCtrl.accept() #accept the connection
-        print "New Connection."
-        t = Thread(target=handle_ctrl_connection, args=(conn, addr))
-        t.start()
-    return
-
-def wait_for_connections():
-    global servRelay
-    global thisNode
-    servRelay = socket(AF_INET, SOCK_STREAM)
-    conAddr = (thisNode.IPAddr, thisNode.relayPort)
-    servRelay.bind((conAddr))
-    servRelay.listen(MAX_CONNECTIONS) 
-    print "Waiting for Relay Connections."
-    while 1:
-        conn, addr = servRelay.accept() #accept the connection
-        print "New Connection."
-        t = Thread(target=handle_connection, args=(conn, addr))
-        t.start()
-    return
-
-def send_ctrl_message_with_ACK(message, messageType, node):
-    #timeout
-    conn = socket(AF_INET, SOCK_STREAM)
-    conn.settimeout(DEFAULT_TIMEOUT)
-    nodeAddr = (node.IPAddr, node.ctrlPort)
-    conn.connect((nodeAddr))
-    conn.send(str(messageType) + ":" + message)
-    data = conn.recv(MAX_REC_SIZE)
-    conn.shutdown(1)
-    conn.close()
-    return data
-
 ####################### Routing ########################
 
+#Gets the node closest to key from node, node
 def get_next_node(node, key):
-    serializedNode = send_ctrl_message_with_ACK(ControlMessageTypes.GET_NEXT_NODE, serialize_key(key), node)
-    return unserialize_node(serializedNode)
+    data = send_ctrl_message_with_ACK(serialize_key(key), ControlMessageTypes.GET_NEXT_NODE, node)
+    return (data[0], unserialize_node(data.split(':')[1]))
+
+def get_next_node_predecessor(node, key):
+    data = send_ctrl_message_with_ACK(serialize_key(key), ControlMessageTypes.GET_NEXT_NODE_PREDECESSOR, node)
+    return (data[0], unserialize_node(data.split(':')[1]))
 
 
-#Gets the root node responsible for key
+#Gets the root node responsible for key, key
 def get_root_node(key):
+    global thisNode
     closestNode = find_closest_finger(key)
     
     if closestNode == thisNode:
         #this is the closest node - return the successor
         return get_immediate_successor_node()
 
-    #while 1:
+    while 1:
         #get next node on the path
-        #get_next_node
+        (retCode, tmpNode) = get_next_node(closestNode, key)
+
+        if retCode == "1":
+            return tmpNode
+
+        closestNode = tmpNode
+        
+    return None
+
+#similar to get_root_node only it returns the preceding node
+def get_closest_preceding_node(key):
+    global thisNode
+    closestNode = find_closest_finger(key)
     
+    if closestNode == thisNode:
+        return thisNode
+
+    while 1:
+        #get next node on the path
+        (retCode, tmpNode) = get_next_node_predecessor(closestNode, key)
+
+        if retCode == "1":
+            return tmpNode
+
+        closestNode = tmpNode
+        
+    return None
+    
+def update_finger_table_request(requestNode, updateNode, i):
+    data = send_ctrl_message_with_ACK(str(i) + ":" + serialize_node(updateNode), ControlMessageTypes.UPDATE_FINGER_TABLE, requestNode)
+    return
+
+def update_finger_table(node, i):
+    global thisNode
+    global fingerTable
+    
+    fingerTableLock.acquire()
+    fingerEntry = fingerTable[i]
+    fingerTableLock.release()
+    
+    if hash_between(node.ID, thisNode.ID, fingerEntry.ID):
+        fingerTableLock.acquire()
+        fingerTable[i] = copy.deepcopy(node)
+        fingerTableLock.release()
+        update_finger_table_request(get_predecessor(), node, i)
+    return
 
 #Requests to run the get_root_node function
 #on requestNode - used to enter the network
 def get_root_node_request(requestNode, key):
-    pass
+    data = send_ctrl_message_with_ACK(serialize_key(key), ControlMessageTypes.GET_ROOT_NODE_REQUEST, requestNode)
+    return unserialize_node(data)
 
 def get_immediate_successor_node():
-    global fingerTable 
-    return fingerTable[0]
+    global fingerTable
+    fingerTableLock.acquire()
+    ret = copy.deepcopy(fingerTable[0])
+    fingerTableLock.release()
+    return ret
 
-def get_node_predecessor():
-    pass
+def get_node_predecessor(requestNode):
+    data = send_ctrl_message_with_ACK("0", ControlMessageTypes.GET_PREDECESSOR, requestNode)
+    return unserialize_node(data)
 
-def inform_new_predecessor():
-    pass
+def inform_new_predecessor(node):
+    global thisNode
+    data = send_ctrl_message_with_ACK(serialize_node(thisNode), ControlMessageTypes.IS_PREDECESSOR, node)
+    return
 
-def inform_new_successor():
-    pass
+def inform_new_successor(node):
+    global thisNode
+    data = send_ctrl_message_with_ACK(serialize_node(thisNode), ControlMessageTypes.IS_SUCCESSOR, node)
+    return
+
+def update_others():
+    global thisNode
+    contactedNodes = []
+    for i in range(0, KEY_SIZE):
+        searchKey = generate_reverse_lookup_key_with_index(thisNode.ID, i)
+        tmpNode = get_closest_preceding_node(searchKey)
+
+        if tmpNode not in contactedNodes:
+            contactedNodes.append(tmpNode)
+            update_finger_table_request(tmpNode, thisNode, i)
+
+    return
+        
 
 def join_network(existingNode):
+    global fingerTable
+    global thisNode
+    
     k = generate_lookup_key_with_index(thisNode.ID, 0)
 
     #send request to existing node to get root node at k
@@ -176,25 +241,87 @@ def join_network(existingNode):
     if tmpNode == None:
         return -1
 
-    #inform node and its pred that you are in the middle
+    fingerTableLock.acquire()
+    fingerTable[0] = copy.deepcopy(tmpNode)
+    fingerTableLock.release()
+
+    #inform node and its pred that you are now between them
+    nextNodesPred = get_node_predecessor(tmpNode)
+    inform_new_successor(nextNodesPred)
+    inform_new_predecessor(tmpNode)
+
+    for i in range(1, KEY_SIZE):
+        searchKey = generate_lookup_key_with_index(thisNode.ID, i)
+        
+        ##this code below cuts down on the amount of requests needed to generate
+	##the table. It checks to see if the previous finger entry is > the lookup entry
+        fingerTableLock.acquire()
+        prevFingerNode = copy.deepcopy(fingerTable[i-1])
+        fingerTableLock.release()
+        
+        if hash_between(searchKey, thisNode.ID, prevFingerNode.ID):
+            fingerTableLock.acquire()
+            fingerTable[i] = copy.deepcopy(fingerTable[i-1])
+            fingerTableLock.release()
+            
+        else:
+            #Need to make a request
+            retNode = get_root_node_request(prevFingerNode, searchKey)
+            fingerTableLock.acquire()
+            fingerTable[i] = copy.deepcopy(retNode)
+            fingerTableLock.release()
+
+    #fingerTableLock.release()
+
+    update_others()
+    return 0
+
+
     
 #################### Misc Functions ####################
 
+## MUTUAL EXCLUSION NEEDS TO BE IMPLEMENTED IN THESE FUNCTIONS
+
 def initialise_finger_table():
     global fingerTable
+    fingerTableLock.acquire()
     for i in range(0, KEY_SIZE):
-        tmpNode = Node()
+        tmpNode = copy.deepcopy(thisNode)
         fingerTable.append(tmpNode)
+    fingerTableLock.release()
+    return
+
+def print_finger_table():
+    fingerTableLock.acquire()
+    for i in range(0, KEY_SIZE):
+        print str(fingerTable[i].ID.key) + " " + str(fingerTable[i].IPAddr) + ":" + str(fingerTable[i].ctrlPort)
+    fingerTableLock.release()
     return
 
 def find_closest_finger(key):
     global fingerTable
     global thisNode
+    fingerTableLock.acquire()
     for i in range((KEY_SIZE - 1), -1, -1):
         if hash_between(fingerTable[i].ID, thisNode.ID, key):
-            return fingerTable[i]
+            return copy.deepcopy(fingerTable[i])
     #this must be the closest node
+    fingerTableLock.release()
     return thisNode
+
+def set_immediate_successor(node):
+    global fingerTable
+    fingerTableLock.acquire()
+    fingerTable[0] = copy.deepcopy(node)
+    fingerTableLock.release()
+
+def set_predecessor(node):
+    global prevNode
+    prevNode = copy.deepcopy(node)
+
+def get_predecessor():
+    global prevNode
+    return prevNode
 
 def serialize_node(node):
     return pickle.dumps(node)
@@ -211,20 +338,28 @@ def unserialize_key(serializedKey):
 
 ######################### Main #########################
 def main():
+    global thisNode
     print hash_str("test")
 
+    initialise_finger_table()
+    set_predecessor(copy.deepcopy(thisNode))
+
     #Start listener threads
-    listenCtrlThread = Thread(target=wait_for_ctrl_connections)
+    listenCtrlThread = Thread(target=wait_for_ctrl_connections, args=(thisNode,handle_ctrl_connection))
     listenCtrlThread.daemon = True
     listenCtrlThread.start()
-    listenThread = Thread(target=wait_for_connections)
+    listenThread = Thread(target=wait_for_connections, args=(thisNode,handle_connection))
     listenThread.daemon = True
     listenThread.start()
     
     #Init
-    initialise_finger_table()
+    #if joining do this
     join_network(Node()) #Create node from args later
-
+    #else creator - skip joining and wait for people to connect
+    
+    print "Joined the network"
+    #print_finger_table()
+    
     #Wait forever
     while 1:
         #The threads should never die
