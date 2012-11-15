@@ -1,14 +1,13 @@
 import hashlib
 
-def KEY_SIZE():
-    return 160
+#key size
+KEY_SIZE = 160
 
 #max chord index
-def MAX_INDEX():
-    return 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+MAX_INDEX = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
 
-def ONE_INDEX():
-    return 0x0000000000000000000000000000000000000001
+#one index
+ONE_INDEX = 0x0000000000000000000000000000000000000001
 
 #returns true if h1>h2
 def hash_greater_than(h1, h2):
@@ -52,14 +51,14 @@ def hash_between(h1, s1, s2):
     return False
 
 def add_keys(k1, k2):
-    x = (int(k1, 16) + int(k2, 16)) % MAX_INDEX()
+    x = (int(k1, 16) + int(k2, 16)) % MAX_INDEX
     return hex(x).replace("L", "")
 
 
 def subtract_keys(k1, k2):
     x = (int(k1, 16) - int(k2, 16))
     if x < 0:
-        x = MAX_INDEX() + x
+        x = MAX_INDEX + x
     return hex(x).replace("L", "")
 
     
@@ -70,7 +69,7 @@ def hash_str(strToHash):
 
 
 def generate_key_with_index(index):
-    return hex(ONE_INDEX() << index).replace("L", "")
+    return hex(ONE_INDEX << index).replace("L", "")
 
 
 def generate_lookup_key_with_index(thisIndex, indexOfKey):
