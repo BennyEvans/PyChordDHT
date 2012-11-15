@@ -1,5 +1,9 @@
 import hashlib
 
+class Key():
+    def __init__(self, key):
+        self.key = key
+
 #key size
 KEY_SIZE = 160
 
@@ -11,19 +15,19 @@ ONE_INDEX = 0x0000000000000000000000000000000000000001
 
 #returns true if h1>h2
 def hash_greater_than(h1, h2):
-    if h1 > h2:
+    if h1.key > h2.key:
         return True
     return False
 
 #returns true if h1<h2
 def hash_less_than(h1, h2):
-    if h1 < h2:
+    if h1.key < h2.key:
         return True
     return False
 
 #returns true if h1==h2
 def hash_equal(h1, h2):
-    if h1 == h2:
+    if h1.key == h2.key:
         return True
     return False
 
@@ -51,25 +55,25 @@ def hash_between(h1, s1, s2):
     return False
 
 def add_keys(k1, k2):
-    x = (int(k1, 16) + int(k2, 16)) % MAX_INDEX
-    return hex(x).replace("L", "")
+    x = (int(k1.key, 16) + int(k2.key, 16)) % MAX_INDEX
+    return Key(hex(x).replace("L", ""))
 
 
 def subtract_keys(k1, k2):
-    x = (int(k1, 16) - int(k2, 16))
+    x = (int(k1.key, 16) - int(k2.key, 16))
     if x < 0:
         x = MAX_INDEX + x
-    return hex(x).replace("L", "")
+    return Key(hex(x).replace("L", ""))
 
     
 def hash_str(strToHash):
     m = hashlib.sha1()
     m.update(strToHash)
-    return "0x" + m.hexdigest()
+    return Key("0x" + m.hexdigest())
 
 
 def generate_key_with_index(index):
-    return hex(ONE_INDEX << index).replace("L", "")
+    return Key(hex(ONE_INDEX << index).replace("L", ""))
 
 
 def generate_lookup_key_with_index(thisIndex, indexOfKey):
@@ -80,21 +84,21 @@ def generate_reverse_lookup_key_with_index(thisIndex, indexOfKey):
     return subtract_keys(thisIndex, generate_key_with_index(indexOfKey))
 
 ##h1 = hash_str("ben0")
-##print h1
+##print h1.key
 ##h2 = hash_str("ben1")
-##print h2
+##print h2.key
 ##h3 = hash_str("ben2")
-##print h3
+##print h3.key
 ##
-##print hash_between(h2, h1, h3)
+##print hash_between(h2, h3, h1)
 ##
 ##m = add_keys(h1, h2)
 ##n = subtract_keys(h1, h2)
-##print m
-##print n
-##print subtract_keys(h3, m)
+##print m.key
+##print n.key
+##print subtract_keys(h3, m).key
 ##
-##print generate_key_with_index(10)
+##print generate_key_with_index(10).key
 ##
-##print generate_lookup_key_with_index(h1, 10)
-##print generate_reverse_lookup_key_with_index(h1,10)
+##print generate_lookup_key_with_index(h1, 10).key
+##print generate_reverse_lookup_key_with_index(h1,10).key

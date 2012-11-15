@@ -1,10 +1,12 @@
 from hash_util import *
+from message_types import *
 from socket import *
 import time
 from threading import Thread
 import signal
 import sys
 import uuid
+import pickle
 
 ####################### Structs #######################
 class Node():
@@ -20,6 +22,7 @@ servCtrl = None
 servRelay = None
 MAX_REC_SIZE = 1024
 MAX_CONNECTIONS = 30
+DEFAULT_TIMEOUT = 10
 
 #Node
 thisNode = Node()
@@ -58,16 +61,26 @@ def graceful_exit(exitCode):
 #################### Network Sockets ####################
     
 def handle_ctrl_connection(conn, addr):
-    data = conn.recv(MAX_REC_SIZE) 
+    data = conn.recv(MAX_REC_SIZE)
+    conn.settimeout(DEFAULT_TIMEOUT)
+
     if data: 
-        conn.send(data)
+        if int(data[0]) == ControlMessageTypes.GET_NEXT_NODE:
+            tmpNode = find_closest_finger(unserialize_key(data.split(':')[1]))
+            if tmpNode == thisNode:
+                tmpNode = get_immediate_successor_node()
+            conn.send(serialize_node(tmpNode))
+        elif int(data[0]) == ControlMessageTypes.GET_ROOT_NODE:
+            pass
+
     print "Closing connection."
     conn.shutdown(1)
     conn.close()
     return
 
 def handle_connection(conn, addr):
-    data = conn.recv(MAX_REC_SIZE) 
+    data = conn.recv(MAX_REC_SIZE)
+    conn.settimeout(DEFAULT_TIMEOUT)
     if data: 
         conn.send(data)
     print "Closing connection."
@@ -77,6 +90,7 @@ def handle_connection(conn, addr):
 
 def wait_for_ctrl_connections():
     global servCtrl
+    global thisNode
     servCtrl = socket(AF_INET, SOCK_STREAM)
     conAddr = (thisNode.IPAddr, thisNode.ctrlPort)
     servCtrl.bind((conAddr))
@@ -91,6 +105,7 @@ def wait_for_ctrl_connections():
 
 def wait_for_connections():
     global servRelay
+    global thisNode
     servRelay = socket(AF_INET, SOCK_STREAM)
     conAddr = (thisNode.IPAddr, thisNode.relayPort)
     servRelay.bind((conAddr))
@@ -103,17 +118,46 @@ def wait_for_connections():
         t.start()
     return
 
+def send_ctrl_message_with_ACK(message, messageType, node):
+    #timeout
+    conn = socket(AF_INET, SOCK_STREAM)
+    conn.settimeout(DEFAULT_TIMEOUT)
+    nodeAddr = (node.IPAddr, node.ctrlPort)
+    conn.connect((nodeAddr))
+    conn.send(str(messageType) + ":" + message)
+    data = conn.recv(MAX_REC_SIZE)
+    conn.shutdown(1)
+    conn.close()
+    return data
+
 ####################### Routing ########################
 
 def get_next_node(node, key):
-    #Not sure if this function will be needed yet
-    pass
+    serializedNode = send_ctrl_message_with_ACK(ControlMessageTypes.GET_NEXT_NODE, serialize_key(key), node)
+    return unserialize_node(serializedNode)
 
-def get_root_node_request(node, key):
+
+#Gets the root node responsible for key
+def get_root_node(key):
+    closestNode = find_closest_finger(key)
+    
+    if closestNode == thisNode:
+        #this is the closest node - return the successor
+        return get_immediate_successor_node()
+
+    #while 1:
+        #get next node on the path
+        #get_next_node
+    
+
+#Requests to run the get_root_node function
+#on requestNode - used to enter the network
+def get_root_node_request(requestNode, key):
     pass
 
 def get_immediate_successor_node():
-    pass
+    global fingerTable 
+    return fingerTable[0]
 
 def get_node_predecessor():
     pass
@@ -142,6 +186,27 @@ def initialise_finger_table():
         tmpNode = Node()
         fingerTable.append(tmpNode)
     return
+
+def find_closest_finger(key):
+    global fingerTable
+    global thisNode
+    for i in range((KEY_SIZE - 1), -1, -1):
+        if hash_between(fingerTable[i].ID, thisNode.ID, key):
+            return fingerTable[i]
+    #this must be the closest node
+    return thisNode
+
+def serialize_node(node):
+    return pickle.dumps(node)
+
+def unserialize_node(serializedNode):
+    return pickle.loads(serializedNode)
+
+def serialize_key(key):
+    return pickle.dumps(key)
+
+def unserialize_key(serializedKey):
+    return pickle.loads(serializedKey)
 
 
 ######################### Main #########################
