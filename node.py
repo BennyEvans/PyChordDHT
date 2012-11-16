@@ -6,11 +6,12 @@ from threading import *
 import signal
 import sys
 import uuid
-import pickle
 import copy
+from optparse import OptionParser
 
 ##TODO
 # arg parsing
+# infinite thread creation with 1 node
 
 ####################### Structs #######################
 class Node():
@@ -327,22 +328,32 @@ def get_predecessor():
     global prevNode
     return prevNode
 
-##def serialize_node(node):
-##    return pickle.dumps(node)
-##
-##def unserialize_node(serializedNode):
-##    return pickle.loads(serializedNode)
-##
-##def serialize_key(key):
-##    return pickle.dumps(key)
-##
-##def unserialize_key(serializedKey):
-##    return pickle.loads(serializedKey)
-
-
 ######################### Main #########################
 def main():
     global thisNode
+
+
+    parser = OptionParser(usage="usage: %prog [options] filename",
+                          version="%prog 1.0")
+    parser.add_option("-e", "--existingnode",
+                      action="store",
+                      type="string",
+                      dest="existingnode",
+                      help="Use an existing node to join an existing network.")
+    parser.add_option("-p", "--controlport",
+                      action="store",
+                      type="int",
+                      dest="controlport",
+                      help="Port to listen on for network control.")
+
+    (options, args) = parser.parse_args()
+
+    if options.controlport == None:
+        print "Please specify the port to listen on with the -p option."
+        exit(0)
+    thisNode.ctrlPort = options.controlport
+    print "Set listening port to " + str(options.controlport)
+    
     print hash_str("test")
 
     initialise_finger_table()
@@ -352,14 +363,17 @@ def main():
     listenCtrlThread = Thread(target=wait_for_ctrl_connections, args=(thisNode,handle_ctrl_connection))
     listenCtrlThread.daemon = True
     listenCtrlThread.start()
-    listenThread = Thread(target=wait_for_connections, args=(thisNode,handle_connection))
-    listenThread.daemon = True
-    listenThread.start()
+    #listenThread = Thread(target=wait_for_connections, args=(thisNode,handle_connection))
+    #listenThread.daemon = True
+    #listenThread.start()
     
     #Init
-    #if joining do this
-    join_network(Node()) #Create node from args later
-    #else creator - skip joining and wait for people to connect
+    if options.existingnode != None:
+        tmpNode = Node()
+        tmpNode.IPAddr = options.existingnode.split(":")[0]
+        tmpNode.ctrlPort = int(options.existingnode.split(":")[1])
+        join_network(tmpNode)
+
     
     print "Joined the network"
     #print_finger_table()
@@ -368,7 +382,7 @@ def main():
     while 1:
         #The threads should never die
         listenCtrlThread.join(1)
-        listenThread.join(1)
+        #listenThread.join(1)
         
     return 0
 
