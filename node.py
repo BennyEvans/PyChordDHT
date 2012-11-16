@@ -10,8 +10,6 @@ import pickle
 import copy
 
 ##TODO
-# Don't use split(":") - serialized object may contain ":"
-# Port to using CtrlMessage() this will also fix the above
 # arg parsing
 
 ####################### Structs #######################
@@ -67,42 +65,48 @@ def handle_ctrl_connection(conn, addr):
     data = conn.recv(MAX_REC_SIZE)
     conn.settimeout(DEFAULT_TIMEOUT)
 
-    if data: 
-        if int(data[0]) == ControlMessageTypes.GET_NEXT_NODE:
-            retCode = "0"
-            tmpNode = find_closest_finger(unserialize_key(data.split(':')[1]))
+    if data:
+        message = unserialize_message(data)
+        
+        if message.messageType == ControlMessageTypes.GET_NEXT_NODE:
+            retCode = 0
+            tmpNode = find_closest_finger(message.data)
             if tmpNode == thisNode:
                 tmpNode = get_immediate_successor_node()
-                retCode = "1"
-            conn.send(retCode + ":" + serialize_node(tmpNode))
+                retCode = 1
+            retMsg = CtrlMessage(MessageTypes.MSG_ACK, tmpNode, retCode)
+            conn.send(serialize_message(retMsg))
             
-        elif int(data[0]) == ControlMessageTypes.GET_ROOT_NODE_REQUEST:
-            tmpNode = get_root_node(unserialize_key(data.split(':')[1]))
-            conn.send(serialize_node(tmpNode))
+        elif message.messageType == ControlMessageTypes.GET_ROOT_NODE_REQUEST:
+            tmpNode = get_root_node(message.data)
+            retMsg = CtrlMessage(MessageTypes.MSG_ACK, tmpNode, 0)
+            conn.send(serialize_message(retMsg))
             
-        elif int(data[0]) == ControlMessageTypes.GET_PREDECESSOR:
-            conn.send(serialize_node(get_predecessor()))
+        elif message.messageType == ControlMessageTypes.GET_PREDECESSOR:
+            retMsg = CtrlMessage(MessageTypes.MSG_ACK, get_predecessor(), 0)
+            conn.send(serialize_message(retMsg))
             
-        elif int(data[0]) == ControlMessageTypes.IS_PREDECESSOR:
-            set_predecessor(unserialize_node(data.split(':')[1]))
-            conn.send(ACK)
+        elif message.messageType == ControlMessageTypes.IS_PREDECESSOR:
+            set_predecessor(copy.deepcopy(message.data))
+            retMsg = CtrlMessage(MessageTypes.MSG_ACK, 0, 0)
+            conn.send(serialize_message(retMsg))
             
-        elif int(data[0]) == ControlMessageTypes.IS_SUCCESSOR:
-            set_immediate_successor(unserialize_node(data.split(':')[1]))
-            conn.send(ACK)
+        elif message.messageType == ControlMessageTypes.IS_SUCCESSOR:
+            set_immediate_successor(copy.deepcopy(message.data))
+            retMsg = CtrlMessage(MessageTypes.MSG_ACK, 0, 0)
+            conn.send(serialize_message(retMsg))
             
-        elif int(data[0]) == ControlMessageTypes.GET_NEXT_NODE_PREDECESSOR:
-            retCode = "0"
-            tmpNode = find_closest_finger(unserialize_key(data.split(':')[1]))
+        elif message.messageType == ControlMessageTypes.GET_NEXT_NODE_PREDECESSOR:
+            retCode = 0
+            tmpNode = find_closest_finger(message.data)
             if tmpNode == thisNode:
-                retCode = "1"
-            conn.send(retCode + ":" + serialize_node(tmpNode))
+                retCode = 1
+            retMsg = CtrlMessage(MessageTypes.MSG_ACK, tmpNode, retCode)
+            conn.send(serialize_message(retMsg))
             
-        elif int(data[0]) == ControlMessageTypes.UPDATE_FINGER_TABLE:
-            i = data.split(':')[1]
-            tmpNode = unserialize_node(data.split(':')[2])
-            update_finger_table(tmpNode, int(i))
-            conn.send(ACK)
+        elif message.messageType == ControlMessageTypes.UPDATE_FINGER_TABLE:
+            update_finger_table(message.data, message.extra)
+            conn.send(serialize_message(CtrlMessage(MessageTypes.MSG_ACK, 0, 0)))
 
     print "Closing connection."
     conn.shutdown(1)
@@ -123,12 +127,12 @@ def handle_connection(conn, addr):
 
 #Gets the node closest to key from node, node
 def get_next_node(node, key):
-    data = send_ctrl_message_with_ACK(serialize_key(key), ControlMessageTypes.GET_NEXT_NODE, node)
-    return (data[0], unserialize_node(data.split(':')[1]))
+    message = send_ctrl_message_with_ACK(key, ControlMessageTypes.GET_NEXT_NODE, 0, node)
+    return (message.extra, message.data)
 
 def get_next_node_predecessor(node, key):
-    data = send_ctrl_message_with_ACK(serialize_key(key), ControlMessageTypes.GET_NEXT_NODE_PREDECESSOR, node)
-    return (data[0], unserialize_node(data.split(':')[1]))
+    message = send_ctrl_message_with_ACK(key, ControlMessageTypes.GET_NEXT_NODE_PREDECESSOR, 0, node)
+    return (message.extra, message.data)
 
 
 #Gets the root node responsible for key, key
@@ -144,7 +148,7 @@ def get_root_node(key):
         #get next node on the path
         (retCode, tmpNode) = get_next_node(closestNode, key)
 
-        if retCode == "1":
+        if retCode == 1:
             return tmpNode
 
         closestNode = tmpNode
@@ -163,7 +167,7 @@ def get_closest_preceding_node(key):
         #get next node on the path
         (retCode, tmpNode) = get_next_node_predecessor(closestNode, key)
 
-        if retCode == "1":
+        if retCode == 1:
             return tmpNode
 
         closestNode = tmpNode
@@ -171,7 +175,7 @@ def get_closest_preceding_node(key):
     return None
     
 def update_finger_table_request(requestNode, updateNode, i):
-    data = send_ctrl_message_with_ACK(str(i) + ":" + serialize_node(updateNode), ControlMessageTypes.UPDATE_FINGER_TABLE, requestNode)
+    data = send_ctrl_message_with_ACK(updateNode, ControlMessageTypes.UPDATE_FINGER_TABLE, i, requestNode)
     return
 
 def update_finger_table(node, i):
@@ -192,8 +196,8 @@ def update_finger_table(node, i):
 #Requests to run the get_root_node function
 #on requestNode - used to enter the network
 def get_root_node_request(requestNode, key):
-    data = send_ctrl_message_with_ACK(serialize_key(key), ControlMessageTypes.GET_ROOT_NODE_REQUEST, requestNode)
-    return unserialize_node(data)
+    message = send_ctrl_message_with_ACK(key, ControlMessageTypes.GET_ROOT_NODE_REQUEST, 0, requestNode)
+    return message.data
 
 def get_immediate_successor_node():
     global fingerTable
@@ -203,17 +207,17 @@ def get_immediate_successor_node():
     return ret
 
 def get_node_predecessor(requestNode):
-    data = send_ctrl_message_with_ACK("0", ControlMessageTypes.GET_PREDECESSOR, requestNode)
-    return unserialize_node(data)
+    message = send_ctrl_message_with_ACK(0, ControlMessageTypes.GET_PREDECESSOR, 0, requestNode)
+    return message.data
 
 def inform_new_predecessor(node):
     global thisNode
-    data = send_ctrl_message_with_ACK(serialize_node(thisNode), ControlMessageTypes.IS_PREDECESSOR, node)
+    data = send_ctrl_message_with_ACK(thisNode, ControlMessageTypes.IS_PREDECESSOR, 0, node)
     return
 
 def inform_new_successor(node):
     global thisNode
-    data = send_ctrl_message_with_ACK(serialize_node(thisNode), ControlMessageTypes.IS_SUCCESSOR, node)
+    data = send_ctrl_message_with_ACK(thisNode, ControlMessageTypes.IS_SUCCESSOR, 0, node)
     return
 
 def update_others():
@@ -266,7 +270,7 @@ def join_network(existingNode):
             
         else:
             #Need to make a request
-            retNode = get_root_node_request(prevFingerNode, searchKey)
+            retNode = get_root_node_request(existingNode, searchKey)
             fingerTableLock.acquire()
             fingerTable[i] = copy.deepcopy(retNode)
             fingerTableLock.release()
@@ -323,17 +327,17 @@ def get_predecessor():
     global prevNode
     return prevNode
 
-def serialize_node(node):
-    return pickle.dumps(node)
-
-def unserialize_node(serializedNode):
-    return pickle.loads(serializedNode)
-
-def serialize_key(key):
-    return pickle.dumps(key)
-
-def unserialize_key(serializedKey):
-    return pickle.loads(serializedKey)
+##def serialize_node(node):
+##    return pickle.dumps(node)
+##
+##def unserialize_node(serializedNode):
+##    return pickle.loads(serializedNode)
+##
+##def serialize_key(key):
+##    return pickle.dumps(key)
+##
+##def unserialize_key(serializedKey):
+##    return pickle.loads(serializedKey)
 
 
 ######################### Main #########################
