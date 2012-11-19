@@ -5,8 +5,6 @@ from threading import Thread
 import pickle
 
 #Networking
-servCtrl = None
-servRelay = None
 MAX_REC_SIZE = 4096
 MAX_CONNECTIONS = 30
 DEFAULT_TIMEOUT = 10
@@ -33,7 +31,7 @@ def wait_for_ctrl_connections(thisNode, handlerFunction):
     print "Waiting for Control Connections."
     while 1:
         conn, addr = servCtrl.accept() #accept the connection
-        print "New Connection."
+        #print "New Connection."
         t = Thread(target=handlerFunction, args=(conn, addr))
         t.start()
     return
@@ -47,7 +45,7 @@ def wait_for_connections(thisNode, handlerFunction):
     print "Waiting for Relay Connections."
     while 1:
         conn, addr = servRelay.accept() #accept the connection
-        print "New Connection."
+        #print "New Connection."
         t = Thread(target=handlerFunction, args=(conn, addr))
         t.start()
     return

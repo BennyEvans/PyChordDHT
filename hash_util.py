@@ -4,14 +4,16 @@ class Key():
     def __init__(self, key):
         self.key = key
 
+    def __eq__(self, other):
+        if self.key == other.key:
+            return True
+        return False
+
 #key size
 KEY_SIZE = 160
 
 #max chord index
-MAX_INDEX = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
-
-#one index
-ONE_INDEX = 0x0000000000000000000000000000000000000001
+MAX_INDEX = (0x01 << 160) - 1
 
 #returns true if h1>h2
 def hash_greater_than(h1, h2):
@@ -73,7 +75,7 @@ def hash_str(strToHash):
 
 
 def generate_key_with_index(index):
-    return Key(hex(ONE_INDEX << index).replace("L", ""))
+    return Key(hex(0x01 << index).replace("L", ""))
 
 
 def generate_lookup_key_with_index(thisIndex, indexOfKey):

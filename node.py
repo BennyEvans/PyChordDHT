@@ -10,8 +10,8 @@ import copy
 from optparse import OptionParser
 
 ##TODO
-# arg parsing
 # infinite thread creation with 1 node
+# hash math - some indexes are wrong.
 
 ####################### Structs #######################
 class Node():
@@ -19,6 +19,14 @@ class Node():
     IPAddr = "localhost"
     ctrlPort = 7228
     relayPort = 7229
+
+    def __eq__(self, other):
+        if (self.ID == other.ID and self.IPAddr == other.IPAddr and self.ctrlPort
+            == other.ctrlPort and self.relayPort == other.relayPort):
+
+            return True
+        return False
+            
 
 ####################### Globals #######################
 
@@ -29,11 +37,15 @@ thisNode.IPAddr = "localhost"
 thisNode.ctrlPort = 7228
 thisNode.relayPort = 7229
 
-prevNode = None
+prevNode = thisNode
 
 #Finger table
 fingerTable = []
 fingerTableLock = Lock()
+
+#Network connections
+servCtrl = None
+servRelay = None
 
 ############### Signal Handlers and Exit ###############
 
@@ -68,6 +80,7 @@ def handle_ctrl_connection(conn, addr):
 
     if data:
         message = unserialize_message(data)
+        #print "Recieved - " + str(message.messageType)
         
         if message.messageType == ControlMessageTypes.GET_NEXT_NODE:
             retCode = 0
@@ -85,16 +98,19 @@ def handle_ctrl_connection(conn, addr):
             
         elif message.messageType == ControlMessageTypes.GET_PREDECESSOR:
             retMsg = CtrlMessage(MessageTypes.MSG_ACK, get_predecessor(), 0)
+            print "returning pred - " + str(get_predecessor().ID.key)
             conn.send(serialize_message(retMsg))
             
         elif message.messageType == ControlMessageTypes.IS_PREDECESSOR:
             set_predecessor(copy.deepcopy(message.data))
             retMsg = CtrlMessage(MessageTypes.MSG_ACK, 0, 0)
+            print "set pred - " + str(message.data.ID.key)
             conn.send(serialize_message(retMsg))
             
         elif message.messageType == ControlMessageTypes.IS_SUCCESSOR:
             set_immediate_successor(copy.deepcopy(message.data))
             retMsg = CtrlMessage(MessageTypes.MSG_ACK, 0, 0)
+            print "set suc - " + str(message.data.ID.key)
             conn.send(serialize_message(retMsg))
             
         elif message.messageType == ControlMessageTypes.GET_NEXT_NODE_PREDECESSOR:
@@ -108,8 +124,10 @@ def handle_ctrl_connection(conn, addr):
         elif message.messageType == ControlMessageTypes.UPDATE_FINGER_TABLE:
             update_finger_table(message.data, message.extra)
             conn.send(serialize_message(CtrlMessage(MessageTypes.MSG_ACK, 0, 0)))
+        else:
+            print "random msg"
 
-    print "Closing connection."
+    #print "Closing connection."
     conn.shutdown(1)
     conn.close()
     return
@@ -159,6 +177,7 @@ def get_root_node(key):
 #similar to get_root_node only it returns the preceding node
 def get_closest_preceding_node(key):
     global thisNode
+
     closestNode = find_closest_finger(key)
     
     if closestNode == thisNode:
@@ -223,15 +242,10 @@ def inform_new_successor(node):
 
 def update_others():
     global thisNode
-    contactedNodes = []
     for i in range(0, KEY_SIZE):
         searchKey = generate_reverse_lookup_key_with_index(thisNode.ID, i)
         tmpNode = get_closest_preceding_node(searchKey)
-
-        if tmpNode not in contactedNodes:
-            contactedNodes.append(tmpNode)
-            update_finger_table_request(tmpNode, thisNode, i)
-
+        update_finger_table_request(tmpNode, thisNode, i)
     return
         
 
@@ -243,15 +257,15 @@ def join_network(existingNode):
 
     #send request to existing node to get root node at k
     tmpNode = get_root_node_request(existingNode, k)
-    if tmpNode == None:
+    if tmpNode is None:
         return -1
 
-    fingerTableLock.acquire()
-    fingerTable[0] = copy.deepcopy(tmpNode)
-    fingerTableLock.release()
-
+    set_immediate_successor(tmpNode)
+    
     #inform node and its pred that you are now between them
     nextNodesPred = get_node_predecessor(tmpNode)
+    set_predecessor(nextNodesPred)
+    set_finger_table_to_successor()
     inform_new_successor(nextNodesPred)
     inform_new_predecessor(tmpNode)
 
@@ -268,16 +282,16 @@ def join_network(existingNode):
             fingerTableLock.acquire()
             fingerTable[i] = copy.deepcopy(fingerTable[i-1])
             fingerTableLock.release()
-            
         else:
             #Need to make a request
+            print "Making request for fingertable construction"
             retNode = get_root_node_request(existingNode, searchKey)
             fingerTableLock.acquire()
             fingerTable[i] = copy.deepcopy(retNode)
             fingerTableLock.release()
 
     #fingerTableLock.release()
-
+    print "Updating Others"
     update_others()
     return 0
 
@@ -296,10 +310,19 @@ def initialise_finger_table():
     fingerTableLock.release()
     return
 
+def set_finger_table_to_successor():
+    fingerTableLock.acquire()
+    for i in range(1, KEY_SIZE):
+        fingerTable[i] = copy.deepcopy(fingerTable[0])
+    fingerTableLock.release()
+    return
+    
+
 def print_finger_table():
+    global thisNode
     fingerTableLock.acquire()
     for i in range(0, KEY_SIZE):
-        print str(fingerTable[i].ID.key) + " " + str(fingerTable[i].IPAddr) + ":" + str(fingerTable[i].ctrlPort)
+        print str(fingerTable[i].ID.key) + " " + str(fingerTable[i].IPAddr) + ":" + str(fingerTable[i].ctrlPort) + " " + str(generate_lookup_key_with_index(thisNode.ID, i).key)
     fingerTableLock.release()
     return
 
@@ -309,6 +332,7 @@ def find_closest_finger(key):
     fingerTableLock.acquire()
     for i in range((KEY_SIZE - 1), -1, -1):
         if hash_between(fingerTable[i].ID, thisNode.ID, key):
+            fingerTableLock.release()
             return copy.deepcopy(fingerTable[i])
     #this must be the closest node
     fingerTableLock.release()
@@ -348,13 +372,13 @@ def main():
 
     (options, args) = parser.parse_args()
 
-    if options.controlport == None:
+    if options.controlport is None:
         print "Please specify the port to listen on with the -p option."
         exit(0)
     thisNode.ctrlPort = options.controlport
     print "Set listening port to " + str(options.controlport)
     
-    print hash_str("test")
+    print "This ID: " + thisNode.ID.key
 
     initialise_finger_table()
     set_predecessor(copy.deepcopy(thisNode))
@@ -363,6 +387,8 @@ def main():
     listenCtrlThread = Thread(target=wait_for_ctrl_connections, args=(thisNode,handle_ctrl_connection))
     listenCtrlThread.daemon = True
     listenCtrlThread.start()
+    print "Sleeping for 1 seconds while listening threads are created."
+    time.sleep(1)
     #listenThread = Thread(target=wait_for_connections, args=(thisNode,handle_connection))
     #listenThread.daemon = True
     #listenThread.start()
@@ -376,13 +402,16 @@ def main():
 
     
     print "Joined the network"
-    #print_finger_table()
+    print "This ID: " + thisNode.ID.key
+    print_finger_table()
     
     #Wait forever
     while 1:
         #The threads should never die
         listenCtrlThread.join(1)
         #listenThread.join(1)
+        raw_input("Press enter to print finger table...")
+        print_finger_table()
         
     return 0
 
