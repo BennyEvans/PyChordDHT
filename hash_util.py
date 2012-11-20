@@ -17,19 +17,19 @@ MAX_INDEX = (0x01 << 160) - 1
 
 #returns true if h1>h2
 def hash_greater_than(h1, h2):
-    if h1.key > h2.key:
+    if int(h1.key, 16) > int(h2.key, 16):
         return True
     return False
 
 #returns true if h1<h2
 def hash_less_than(h1, h2):
-    if h1.key < h2.key:
+    if int(h1.key, 16) < int(h2.key, 16):
         return True
     return False
 
 #returns true if h1==h2
 def hash_equal(h1, h2):
-    if h1.key == h2.key:
+    if int(h1.key, 16) == int(h2.key, 16):
         return True
     return False
 
@@ -84,23 +84,3 @@ def generate_lookup_key_with_index(thisIndex, indexOfKey):
 
 def generate_reverse_lookup_key_with_index(thisIndex, indexOfKey):
     return subtract_keys(thisIndex, generate_key_with_index(indexOfKey))
-
-##h1 = hash_str("ben0")
-##print h1.key
-##h2 = hash_str("ben1")
-##print h2.key
-##h3 = hash_str("ben2")
-##print h3.key
-##
-##print hash_between(h2, h3, h1)
-##
-##m = add_keys(h1, h2)
-##n = subtract_keys(h1, h2)
-##print m.key
-##print n.key
-##print subtract_keys(h3, m).key
-##
-##print generate_key_with_index(10).key
-##
-##print generate_lookup_key_with_index(h1, 10).key
-##print generate_reverse_lookup_key_with_index(h1,10).key

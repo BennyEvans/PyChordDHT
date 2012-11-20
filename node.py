@@ -42,6 +42,7 @@ prevNode = thisNode
 #Finger table
 fingerTable = []
 fingerTableLock = Lock()
+prevNodeLock = Lock()
 
 #Network connections
 servCtrl = None
@@ -343,14 +344,21 @@ def set_immediate_successor(node):
     fingerTableLock.acquire()
     fingerTable[0] = copy.deepcopy(node)
     fingerTableLock.release()
+    return
 
 def set_predecessor(node):
     global prevNode
+    prevNodeLock.acquire()
     prevNode = copy.deepcopy(node)
+    prevNodeLock.release()
+    return
 
 def get_predecessor():
     global prevNode
-    return prevNode
+    prevNodeLock.acquire()
+    ret = copy.deepcopy(prevNode)
+    prevNodeLock.release()
+    return ret
 
 ######################### Main #########################
 def main():
