@@ -10,9 +10,13 @@ import copy
 from optparse import OptionParser
 import random
 
-##TODO
+### TODO ###
 # Finish stabilization
 # hash math - some indexes are wrong <- I think this is fixed
+# if request times out - use backup node
+# if two fingers are wrong in a row - update the table
+# update request on node failure
+############
 
 ####################### Structs #######################
 class Node():
@@ -44,6 +48,10 @@ prevNode = thisNode
 fingerTable = []
 fingerTableLock = Lock()
 prevNodeLock = Lock()
+
+successorList = []
+sucListLock = Lock()
+successorOfflineAttempts = 0
 
 #Network connections
 servCtrl = None
@@ -83,7 +91,7 @@ def handle_ctrl_connection(conn, addr):
 
     if data:
         message = unserialize_message(data)
-        print "Recieved - " + str(message.messageType)
+        #print "Recieved - " + str(message.messageType)
         
         if message.messageType == ControlMessageTypes.GET_NEXT_NODE:
             retCode = 0
@@ -95,6 +103,7 @@ def handle_ctrl_connection(conn, addr):
             conn.send(serialize_message(retMsg))
             
         elif message.messageType == ControlMessageTypes.GET_ROOT_NODE_REQUEST:
+            print "Got root node request"
             tmpNode = get_root_node(message.data)
             retMsg = CtrlMessage(MessageTypes.MSG_ACK, tmpNode, 0)
             conn.send(serialize_message(retMsg))
@@ -104,13 +113,17 @@ def handle_ctrl_connection(conn, addr):
             conn.send(serialize_message(retMsg))
             
         elif message.messageType == ControlMessageTypes.IS_PREDECESSOR:
-            if hash_between(message.data.key, get_predecessor().key, thisNode.key):
+            print "New pred set"
+            if hash_between(message.data.ID, get_predecessor().ID, thisNode.ID):
                 set_predecessor(copy.deepcopy(message.data))
             retMsg = CtrlMessage(MessageTypes.MSG_ACK, 0, 0)
             conn.send(serialize_message(retMsg))
             
         elif message.messageType == ControlMessageTypes.IS_SUCCESSOR:
-            if hash_between(message.data.key, thisNode.key, get_immediate_successor_node().key):
+            farmThread = Thread(target=farm_successor_list)
+            farmThread.daemon = True
+            farmThread.start()
+            if hash_between(message.data.ID, thisNode.ID, get_immediate_successor_node().ID):
                 set_immediate_successor(copy.deepcopy(message.data))
             retMsg = CtrlMessage(MessageTypes.MSG_ACK, 0, 0)
             conn.send(serialize_message(retMsg))
@@ -125,7 +138,9 @@ def handle_ctrl_connection(conn, addr):
             
         elif message.messageType == ControlMessageTypes.UPDATE_FINGER_TABLE:
             update_finger_table(message.data, message.extra)
-            conn.send(serialize_message(CtrlMessage(MessageTypes.MSG_ACK, 0, 0)))  
+            conn.send(serialize_message(CtrlMessage(MessageTypes.MSG_ACK, 0, 0)))
+        elif message.messageType == MessageTypes.PING:
+            conn.send(serialize_message(CtrlMessage(MessageTypes.MSG_ACK, 0, 0)))       
         else:
             print "random msg"
 
@@ -148,11 +163,17 @@ def handle_connection(conn, addr):
 
 #Gets the node closest to key from node, node
 def get_next_node(node, key):
-    message = send_ctrl_message_with_ACK(key, ControlMessageTypes.GET_NEXT_NODE, 0, node)
+    message = send_ctrl_message_with_ACK(key, ControlMessageTypes.GET_NEXT_NODE, 0, node, DEFAULT_TIMEOUT)
+    if message is None:
+        #TODO: handle this
+        pass
     return (message.extra, message.data)
 
 def get_next_node_predecessor(node, key):
-    message = send_ctrl_message_with_ACK(key, ControlMessageTypes.GET_NEXT_NODE_PREDECESSOR, 0, node)
+    message = send_ctrl_message_with_ACK(key, ControlMessageTypes.GET_NEXT_NODE_PREDECESSOR, 0, node, DEFAULT_TIMEOUT)
+    if message is None:
+        #TODO: handle this
+        pass
     return (message.extra, message.data)
 
 
@@ -197,12 +218,23 @@ def get_closest_preceding_node(key):
     return None
     
 def update_finger_table_request(requestNode, updateNode, i):
-    data = send_ctrl_message_with_ACK(updateNode, ControlMessageTypes.UPDATE_FINGER_TABLE, i, requestNode)
+    data = send_ctrl_message_with_ACK(updateNode, ControlMessageTypes.UPDATE_FINGER_TABLE, i, requestNode, DEFAULT_TIMEOUT * 4)
+    if data is None:
+        #TODO: handle this
+        pass
     return
 
 def update_finger_table(node, i):
     global thisNode
     global fingerTable
+
+    #On small networks this should be done - alot of trafic though
+    #There should be a better way of doing this but w/o is fine for large
+    #networks
+    
+    #farmThread = Thread(target=farm_successor_list)
+    #farmThread.daemon = True
+    #farmThread.start()
     
     fingerTableLock.acquire()
     fingerEntry = fingerTable[i]
@@ -218,7 +250,10 @@ def update_finger_table(node, i):
 #Requests to run the get_root_node function
 #on requestNode - used to enter the network
 def get_root_node_request(requestNode, key):
-    message = send_ctrl_message_with_ACK(key, ControlMessageTypes.GET_ROOT_NODE_REQUEST, 0, requestNode)
+    message = send_ctrl_message_with_ACK(key, ControlMessageTypes.GET_ROOT_NODE_REQUEST, 0, requestNode, DEFAULT_TIMEOUT * 4)
+    if message is None:
+        #TODO: handle this
+        pass
     return message.data
 
 def get_immediate_successor_node():
@@ -229,17 +264,26 @@ def get_immediate_successor_node():
     return ret
 
 def get_node_predecessor(requestNode):
-    message = send_ctrl_message_with_ACK(0, ControlMessageTypes.GET_PREDECESSOR, 0, requestNode)
+    message = send_ctrl_message_with_ACK(0, ControlMessageTypes.GET_PREDECESSOR, 0, requestNode, DEFAULT_TIMEOUT)
+    if message is None:
+        #TODO: handle this
+        return None
     return message.data
 
 def inform_new_predecessor(node):
     global thisNode
-    data = send_ctrl_message_with_ACK(thisNode, ControlMessageTypes.IS_PREDECESSOR, 0, node)
+    data = send_ctrl_message_with_ACK(thisNode, ControlMessageTypes.IS_PREDECESSOR, 0, node, DEFAULT_TIMEOUT)
+    if data is None:
+        #TODO: handle this
+        pass
     return
 
 def inform_new_successor(node):
     global thisNode
-    data = send_ctrl_message_with_ACK(thisNode, ControlMessageTypes.IS_SUCCESSOR, 0, node)
+    data = send_ctrl_message_with_ACK(thisNode, ControlMessageTypes.IS_SUCCESSOR, 0, node, DEFAULT_TIMEOUT)
+    if data is None:
+        #TODO: handle this
+        pass
     return
 
 def update_others():
@@ -326,6 +370,7 @@ def print_finger_table():
     for i in range(0, KEY_SIZE):
         print str(fingerTable[i].ID.key) + " " + str(fingerTable[i].IPAddr) + ":" + str(fingerTable[i].ctrlPort) + " " + str(generate_lookup_key_with_index(thisNode.ID, i).key)
     fingerTableLock.release()
+    print "Pred: " + get_predecessor().ID.key
     return
 
 def find_closest_finger(key):
@@ -363,35 +408,154 @@ def get_predecessor():
 
 ##################### Stabilization ####################
 
+def initialise_successor_list():
+    global successorList
+    global thisNode
+    sucListLock.acquire()
+    for i in range(0, 30):
+        successorList.append(copy.deepcopy(thisNode))
+    sucListLock.release()
+    return
+
 def farm_successor_list():
-    pass
+    global thisNode
+    global successorList
+    global fingerTable
+    tmpId = thisNode.ID
+    print "Farming successor list"
+    for i in range(0, 15):
+        #if this times out use next node
+        node = get_root_node(generate_lookup_key_with_index(tmpId, 0))
+        sucListLock.acquire()
+        successorList[i] = copy.deepcopy(node)
+        sucListLock.release()
+        tmpId = node.ID
+    #Now add some finger table entries
+    for i in range(15,30):
+        sucListLock.acquire()
+        fingerTableLock.acquire()
+        successorList[i] = copy.deepcopy(fingerTable[130 + i])
+        fingerTableLock.release()
+        sucListLock.release()
+    print "Finished farming successor list"
+    return
+
+def get_next_successor():
+    global successorList
+    global successorOfflineAttempts
+    sucListLock.acquire()
+    for m in successorList:
+        print m.ID.key
+    successorOfflineAttempts += 1
+    if successorOfflineAttempts > 30:
+        farmThread = Thread(target=farm_successor_list)
+        farmThread.daemon = True
+        farmThread.start()
+        successorOfflineAttempts = 0
+    tmp = successorList.pop(0)
+    successorList.append(tmp)
+    ret = copy.deepcopy(successorList[0])
+    sucListLock.release()
+    return ret
+
+def stabilize_predecessor_routine():
+    global thisNode
+    while 1:
+        #every 2 seconds ping your pred
+        time.sleep(2)
+        #print "Stabilizing predecessor"
+        if send_ping_message(get_predecessor()) == False:
+            set_predecessor(thisNode)
+            print "Predecessor is down."
+
+def ping_and_update(node, successor):
+    #try to ping node twice more, if no response sent update_others with node ID
+    if send_ping_message(node) == False:
+        if send_ping_message(node) == False:
+            print "Node is officially offline... sending out update message"
+            for i in range(0, KEY_SIZE):
+                searchKey = generate_reverse_lookup_key_with_index(node.ID, i)
+                tmpNode = get_closest_preceding_node(searchKey)
+                update_finger_table_request(tmpNode, node, i)
+    return
 
 def stabilization_routine():
     global thisNode
-    #farm a successor list of size 15 and update every 5 minutes
-    successorList = []
+    global successorOfflineAttempts
+    sucCount = 0
+
+    #create the successor list
+    farm_successor_list()
+
+    predStabilizationThread = Thread(target=stabilize_predecessor_routine)
+    predStabilizationThread.daemon = True
+    predStabilizationThread.start()
+
+    offlineList = []
+
     while 1:
-        #make sure your immediate successor and prev is still alive and check the state
-        #if pred is offline set pre to thisNode
-        #if succ is offline set succ to ....
         time.sleep(2)
-        #need to ping node to make sure its still up and if not move to next
+        
+        #update the successor list every 5 minutes
+        if sucCount > 150:
+            farmThread = Thread(target=farm_successor_list)
+            farmThread.daemon = True
+            farmThread.start()
+            sucCount = 0
+            successorOfflineAttempts = 0
+    
         suc = get_immediate_successor_node()
         pre = get_node_predecessor(suc)
-        if thisNode != pre:
-            if hash_between(thisNode.key, pre.key, suc.key):
+        if pre is None:
+            print "Successor seems to be offline."
+            #our successor seems to be offline
+##            if suc not in offlineList:
+##                pingThread = Thread(target=ping_and_update, args=(copy.deepcopy(suc),copy.deepcopy(thisNode)))
+##                pingThread.daemon = True
+##                pingThread.start()
+##                offlineList.append(suc)
+            suc = get_next_successor()
+            set_immediate_successor(suc)
+            print "New succ set to " + suc.ID.key
+            continue
+##        elif pre == thisNode:
+##            print "predecessor is this node..."
+##            suc = get_next_successor()
+##            set_immediate_successor(suc)
+##            print "New succ set to " + suc.ID.key
+##            
+##            #offlineList = []
+        
+        if not thisNode == pre:
+            if hash_between(thisNode.ID, pre.ID, suc.ID):
                 #inform the node you are probably its predecessor
-                data = send_ctrl_message_with_ACK(thisNode, ControlMessageTypes.IS_PREDECESSOR, 0, suc)
+                print "Updating successors predecessor"
+                inform_new_predecessor(suc)
             else:
                 #my successor is wrong
-                set_immediate_successor(pre)
-                data = send_ctrl_message_with_ACK(thisNode, ControlMessageTypes.IS_PREDECESSOR, 0, pre)
-                    
+                print "Successor is wrong"
+                suc = get_next_successor()
+                set_immediate_successor(suc)
+                print "New succ set to " + suc.ID.key
+                
+##                print suc.ID.key
+##
+##                k = generate_lookup_key_with_index(thisNode.ID, 0)
+##                #send request to existing node to get root node at k
+##                tmpNode = get_root_node_request(suc, k)
+##                print tmpNode.ID.key
+##                set_immediate_successor(tmpNode)
+##                inform_new_predecessor(tmpNode)
+##                sucCount = 151
+        
             
 def fix_fingers_stabilization_routine():
     global fingerTable
     while 1:
+        
         #update a random finger table entry every 30 - 60 seconds
+        #update the entire table every 30 minutes
+        
         time.sleep(random.randint(30, 60))
         i = random.randint(1, 159)
         print "Updating finger " + str(i)
@@ -432,6 +596,7 @@ def main():
     print "This ID: " + thisNode.ID.key
 
     initialise_finger_table()
+    initialise_successor_list()
     set_predecessor(copy.deepcopy(thisNode))
 
     #Start listener threads
@@ -445,7 +610,7 @@ def main():
     #listenThread.start()
     
     #Init
-    if options.existingnode != None:
+    if options.existingnode is not None:
         tmpNode = Node()
         tmpNode.IPAddr = options.existingnode.split(":")[0]
         tmpNode.ctrlPort = int(options.existingnode.split(":")[1])
@@ -460,6 +625,10 @@ def main():
     fingerUpdater = Thread(target=fix_fingers_stabilization_routine)
     fingerUpdater.daemon = True
     fingerUpdater.start()
+
+    stabilizer = Thread(target=stabilization_routine)
+    stabilizer.daemon = True
+    stabilizer.start()
     
     #Wait forever
     while 1:

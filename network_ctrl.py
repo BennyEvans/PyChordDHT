@@ -7,7 +7,7 @@ import pickle
 #Networking
 MAX_REC_SIZE = 4096
 MAX_CONNECTIONS = 30
-DEFAULT_TIMEOUT = 10
+DEFAULT_TIMEOUT = 8
 
 class CtrlMessage():
     def __init__(self, messageType, data, extra):
@@ -50,13 +50,16 @@ def wait_for_connections(thisNode, handlerFunction):
         t.start()
     return
 
-def send_ctrl_message_with_ACK(message, messageType, extra, requestNode):
+def send_ctrl_message_with_ACK(message, messageType, extra, requestNode, timeout):
     conn = socket(AF_INET, SOCK_STREAM)
-    conn.settimeout(DEFAULT_TIMEOUT * 4)
+    conn.settimeout(timeout)
     nodeAddr = (requestNode.IPAddr, requestNode.ctrlPort)
-    conn.connect((nodeAddr))
-    conn.send(serialize_message(CtrlMessage(messageType, message, extra)))
-    data = conn.recv(MAX_REC_SIZE)
+    try:
+        conn.connect((nodeAddr))
+        conn.send(serialize_message(CtrlMessage(messageType, message, extra)))
+        data = conn.recv(MAX_REC_SIZE)
+    except:
+        return None
     if data:
         try:
             msg = unserialize_message(data)
@@ -67,3 +70,18 @@ def send_ctrl_message_with_ACK(message, messageType, extra, requestNode):
     conn.shutdown(1)
     conn.close()
     return msg
+
+
+def send_ping_message(requestNode):
+    conn = socket(AF_INET, SOCK_STREAM)
+    conn.settimeout(DEFAULT_TIMEOUT)
+    nodeAddr = (requestNode.IPAddr, requestNode.ctrlPort)
+    try:
+        conn.connect((nodeAddr))
+        conn.send(serialize_message(CtrlMessage(MessageTypes.PING, 0, 0)))
+        data = conn.recv(MAX_REC_SIZE)
+    except:
+        return False
+    conn.shutdown(1)
+    conn.close()
+    return True
