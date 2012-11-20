@@ -8,10 +8,11 @@ import sys
 import uuid
 import copy
 from optparse import OptionParser
+import random
 
 ##TODO
-# infinite thread creation with 1 node
-# hash math - some indexes are wrong.
+# Finish stabilization
+# hash math - some indexes are wrong <- I think this is fixed
 
 ####################### Structs #######################
 class Node():
@@ -76,12 +77,13 @@ def graceful_exit(exitCode):
 ################## NETWORK CALLBACKS ###################
 
 def handle_ctrl_connection(conn, addr):
+    global thisNode
     data = conn.recv(MAX_REC_SIZE)
     conn.settimeout(DEFAULT_TIMEOUT)
 
     if data:
         message = unserialize_message(data)
-        #print "Recieved - " + str(message.messageType)
+        print "Recieved - " + str(message.messageType)
         
         if message.messageType == ControlMessageTypes.GET_NEXT_NODE:
             retCode = 0
@@ -99,19 +101,18 @@ def handle_ctrl_connection(conn, addr):
             
         elif message.messageType == ControlMessageTypes.GET_PREDECESSOR:
             retMsg = CtrlMessage(MessageTypes.MSG_ACK, get_predecessor(), 0)
-            print "returning pred - " + str(get_predecessor().ID.key)
             conn.send(serialize_message(retMsg))
             
         elif message.messageType == ControlMessageTypes.IS_PREDECESSOR:
-            set_predecessor(copy.deepcopy(message.data))
+            if hash_between(message.data.key, get_predecessor().key, thisNode.key):
+                set_predecessor(copy.deepcopy(message.data))
             retMsg = CtrlMessage(MessageTypes.MSG_ACK, 0, 0)
-            print "set pred - " + str(message.data.ID.key)
             conn.send(serialize_message(retMsg))
             
         elif message.messageType == ControlMessageTypes.IS_SUCCESSOR:
-            set_immediate_successor(copy.deepcopy(message.data))
+            if hash_between(message.data.key, thisNode.key, get_immediate_successor_node().key):
+                set_immediate_successor(copy.deepcopy(message.data))
             retMsg = CtrlMessage(MessageTypes.MSG_ACK, 0, 0)
-            print "set suc - " + str(message.data.ID.key)
             conn.send(serialize_message(retMsg))
             
         elif message.messageType == ControlMessageTypes.GET_NEXT_NODE_PREDECESSOR:
@@ -124,7 +125,7 @@ def handle_ctrl_connection(conn, addr):
             
         elif message.messageType == ControlMessageTypes.UPDATE_FINGER_TABLE:
             update_finger_table(message.data, message.extra)
-            conn.send(serialize_message(CtrlMessage(MessageTypes.MSG_ACK, 0, 0)))
+            conn.send(serialize_message(CtrlMessage(MessageTypes.MSG_ACK, 0, 0)))  
         else:
             print "random msg"
 
@@ -360,6 +361,48 @@ def get_predecessor():
     prevNodeLock.release()
     return ret
 
+##################### Stabilization ####################
+
+def farm_successor_list():
+    pass
+
+def stabilization_routine():
+    global thisNode
+    #farm a successor list of size 15 and update every 5 minutes
+    successorList = []
+    while 1:
+        #make sure your immediate successor and prev is still alive and check the state
+        #if pred is offline set pre to thisNode
+        #if succ is offline set succ to ....
+        time.sleep(2)
+        #need to ping node to make sure its still up and if not move to next
+        suc = get_immediate_successor_node()
+        pre = get_node_predecessor(suc)
+        if thisNode != pre:
+            if hash_between(thisNode.key, pre.key, suc.key):
+                #inform the node you are probably its predecessor
+                data = send_ctrl_message_with_ACK(thisNode, ControlMessageTypes.IS_PREDECESSOR, 0, suc)
+            else:
+                #my successor is wrong
+                set_immediate_successor(pre)
+                data = send_ctrl_message_with_ACK(thisNode, ControlMessageTypes.IS_PREDECESSOR, 0, pre)
+                    
+            
+def fix_fingers_stabilization_routine():
+    global fingerTable
+    while 1:
+        #update a random finger table entry every 30 - 60 seconds
+        time.sleep(random.randint(30, 60))
+        i = random.randint(1, 159)
+        print "Updating finger " + str(i)
+        searchKey = generate_lookup_key_with_index(thisNode.ID, i)
+        retNode = get_root_node(searchKey)
+        fingerTableLock.acquire()
+        fingerTable[i] = copy.deepcopy(retNode)
+        fingerTableLock.release()
+        print "Finished updating finger"
+        
+
 ######################### Main #########################
 def main():
     global thisNode
@@ -412,6 +455,11 @@ def main():
     print "Joined the network"
     print "This ID: " + thisNode.ID.key
     print_finger_table()
+
+    #start stabilization threads
+    fingerUpdater = Thread(target=fix_fingers_stabilization_routine)
+    fingerUpdater.daemon = True
+    fingerUpdater.start()
     
     #Wait forever
     while 1:
