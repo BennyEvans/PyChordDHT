@@ -1,3 +1,14 @@
+#!/usr/bin/env python
+#title           :node.py
+#description     :Node in Chord ring
+#author          :Benjamin Evans
+#date            :21/11/2012
+#version         :1.0.0
+#usage           :python node.py -p <port> -e <existingnodeIP:existingnodePort>
+#notes           :
+#python_version  :2.7
+#==============================================================================
+
 from hash_util import *
 from network_ctrl import *
 from socket import *
@@ -14,8 +25,8 @@ import random
 # Finish stabilization
 # hash math - some indexes are wrong <- I think this is fixed
 # if request times out - use backup node
-# if two fingers are wrong in a row - update the table
 # update request on node failure
+# Not closing connection properly - why?
 ############
 
 ####################### Structs #######################
@@ -48,6 +59,7 @@ prevNode = thisNode
 fingerTable = []
 fingerTableLock = Lock()
 prevNodeLock = Lock()
+numFingerErrors = 0
 
 successorList = []
 sucListLock = Lock()
@@ -114,15 +126,14 @@ def handle_ctrl_connection(conn, addr):
             
         elif message.messageType == ControlMessageTypes.IS_PREDECESSOR:
             print "New pred set"
+            farm_successor_list_bg()
             if hash_between(message.data.ID, get_predecessor().ID, thisNode.ID):
                 set_predecessor(copy.deepcopy(message.data))
             retMsg = CtrlMessage(MessageTypes.MSG_ACK, 0, 0)
             conn.send(serialize_message(retMsg))
             
         elif message.messageType == ControlMessageTypes.IS_SUCCESSOR:
-            farmThread = Thread(target=farm_successor_list)
-            farmThread.daemon = True
-            farmThread.start()
+            farm_successor_list_bg()
             if hash_between(message.data.ID, thisNode.ID, get_immediate_successor_node().ID):
                 set_immediate_successor(copy.deepcopy(message.data))
             retMsg = CtrlMessage(MessageTypes.MSG_ACK, 0, 0)
@@ -165,7 +176,7 @@ def handle_connection(conn, addr):
 def get_next_node(node, key):
     message = send_ctrl_message_with_ACK(key, ControlMessageTypes.GET_NEXT_NODE, 0, node, DEFAULT_TIMEOUT)
     if message is None:
-        #TODO: handle this
+        #TODO: handle this - should return successor on failure
         pass
     return (message.extra, message.data)
 
@@ -347,6 +358,10 @@ def join_network(existingNode):
 
 ## MUTUAL EXCLUSION NEEDS TO BE IMPLEMENTED IN THESE FUNCTIONS
 
+def check_node_alive():
+    #ping the node with a short timeout
+    return True
+
 def initialise_finger_table():
     global fingerTable
     fingerTableLock.acquire()
@@ -379,11 +394,15 @@ def find_closest_finger(key):
     fingerTableLock.acquire()
     for i in range((KEY_SIZE - 1), -1, -1):
         if hash_between(fingerTable[i].ID, thisNode.ID, key):
+            tmpNode = copy.deepcopy(fingerTable[i])
             fingerTableLock.release()
-            return copy.deepcopy(fingerTable[i])
+            #try to ping the node - if its not up return our successor
+            if send_ping_message(tmpNode) == False:
+                return get_immediate_successor_node()
+            return tmpNode
     #this must be the closest node
     fingerTableLock.release()
-    return thisNode
+    return copy.deepcopy(thisNode)
 
 def set_immediate_successor(node):
     global fingerTable
@@ -407,6 +426,30 @@ def get_predecessor():
     return ret
 
 ##################### Stabilization ####################
+
+def update_entire_finger_table():
+    set_finger_table_to_successor()
+    for i in range(1, KEY_SIZE):
+        searchKey = generate_lookup_key_with_index(thisNode.ID, i)
+        
+        ##this code below cuts down on the amount of requests needed to generate
+	##the table. It checks to see if the previous finger entry is > the lookup entry
+        fingerTableLock.acquire()
+        prevFingerNode = copy.deepcopy(fingerTable[i-1])
+        fingerTableLock.release()
+        
+        if hash_between(searchKey, thisNode.ID, prevFingerNode.ID):
+            fingerTableLock.acquire()
+            fingerTable[i] = copy.deepcopy(fingerTable[i-1])
+            fingerTableLock.release()
+        else:
+            #Need to make a request
+            print "Making request for fingertable construction"
+            retNode = get_root_node_request(get_immediate_successor_node(), searchKey)
+            fingerTableLock.acquire()
+            fingerTable[i] = copy.deepcopy(retNode)
+            fingerTableLock.release()
+    return
 
 def initialise_successor_list():
     global successorList
@@ -440,6 +483,11 @@ def farm_successor_list():
     print "Finished farming successor list"
     return
 
+def farm_successor_list_bg():
+    farmThread = Thread(target=farm_successor_list)
+    farmThread.daemon = True
+    farmThread.start()
+
 def get_next_successor():
     global successorList
     global successorOfflineAttempts
@@ -448,9 +496,7 @@ def get_next_successor():
         print m.ID.key
     successorOfflineAttempts += 1
     if successorOfflineAttempts > 30:
-        farmThread = Thread(target=farm_successor_list)
-        farmThread.daemon = True
-        farmThread.start()
+        farm_successor_list_bg()
         successorOfflineAttempts = 0
     tmp = successorList.pop(0)
     successorList.append(tmp)
@@ -468,6 +514,7 @@ def stabilize_predecessor_routine():
             set_predecessor(thisNode)
             print "Predecessor is down."
 
+## WORK ON THIS FUNCTION
 def ping_and_update(node, successor):
     #try to ping node twice more, if no response sent update_others with node ID
     if send_ping_message(node) == False:
@@ -498,9 +545,7 @@ def stabilization_routine():
         
         #update the successor list every 5 minutes
         if sucCount > 150:
-            farmThread = Thread(target=farm_successor_list)
-            farmThread.daemon = True
-            farmThread.start()
+            farm_successor_list_bg()
             sucCount = 0
             successorOfflineAttempts = 0
     
@@ -518,13 +563,6 @@ def stabilization_routine():
             set_immediate_successor(suc)
             print "New succ set to " + suc.ID.key
             continue
-##        elif pre == thisNode:
-##            print "predecessor is this node..."
-##            suc = get_next_successor()
-##            set_immediate_successor(suc)
-##            print "New succ set to " + suc.ID.key
-##            
-##            #offlineList = []
         
         if not thisNode == pre:
             if hash_between(thisNode.ID, pre.ID, suc.ID):
@@ -537,34 +575,49 @@ def stabilization_routine():
                 suc = get_next_successor()
                 set_immediate_successor(suc)
                 print "New succ set to " + suc.ID.key
-                
-##                print suc.ID.key
-##
-##                k = generate_lookup_key_with_index(thisNode.ID, 0)
-##                #send request to existing node to get root node at k
-##                tmpNode = get_root_node_request(suc, k)
-##                print tmpNode.ID.key
-##                set_immediate_successor(tmpNode)
-##                inform_new_predecessor(tmpNode)
-##                sucCount = 151
         
             
 def fix_fingers_stabilization_routine():
     global fingerTable
+    global numFingerErrors
+
+    count = 0
+    numFingerErrors = 0
+    
     while 1:
-        
-        #update a random finger table entry every 30 - 60 seconds
-        #update the entire table every 30 minutes
-        
-        time.sleep(random.randint(30, 60))
+        #update a random finger table entry every 25 - 50 seconds
+        time.sleep(random.randint(25, 50))
         i = random.randint(1, 159)
         print "Updating finger " + str(i)
         searchKey = generate_lookup_key_with_index(thisNode.ID, i)
         retNode = get_root_node(searchKey)
+        
         fingerTableLock.acquire()
-        fingerTable[i] = copy.deepcopy(retNode)
+        tmpFinger = copy.deepcopy(fingerTable[i])
         fingerTableLock.release()
+        if not tmpFinger == retNode:
+            print "Finger is wrong - changing finger."
+            if numFingerErrors > 1:
+                print "Detected two finger table errors in a row - refreshing finger table."
+                update_entire_finger_table()
+                numFingerErrors = 0
+            else:
+                fingerTableLock.acquire()
+                fingerTable[i] = copy.deepcopy(retNode)
+                fingerTableLock.release()
+                numFingerErrors+=1
+        else:
+            numFingerErrors = 0
+
         print "Finished updating finger"
+
+        if count > 60:
+            #refresh the entire finger table every 25-50mins
+            print "Performing an entire refresh of the finger table"
+            update_entire_finger_table()
+            count = 0
+        else:
+            count+=1
         
 
 ######################### Main #########################

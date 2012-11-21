@@ -1,3 +1,14 @@
+#!/usr/bin/env python
+#title           :network_ctrl.py
+#description     :Network threading functions for Chord network
+#author          :Benjamin Evans
+#date            :21/11/2012
+#version         :1.0.0
+#notes           :
+#python_version  :2.7
+#version         :1.0.0
+#==============================================================================
+
 from message_types import *
 from socket import *
 import time
@@ -74,7 +85,7 @@ def send_ctrl_message_with_ACK(message, messageType, extra, requestNode, timeout
 
 def send_ping_message(requestNode):
     conn = socket(AF_INET, SOCK_STREAM)
-    conn.settimeout(DEFAULT_TIMEOUT)
+    conn.settimeout(DEFAULT_TIMEOUT - 3) #5 second timeout
     nodeAddr = (requestNode.IPAddr, requestNode.ctrlPort)
     try:
         conn.connect((nodeAddr))
