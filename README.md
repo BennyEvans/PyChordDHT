@@ -6,5 +6,3 @@ Python Chord DHT implementation. Provides the network structure organization as 
 Licence: GNU Lesser General Public License (LGPL) version 2.1 (http://www.gnu.org/licenses/old-licenses/lgpl-2.1.html)
 
 Author: Benjamin Evans
-
-Email: benny.j.evans92_at_gmail.com (replace _at_ with @)
